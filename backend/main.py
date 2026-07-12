@@ -12,6 +12,10 @@ from backend.vector_store import schema_store
 from backend.agents import orchestrator, AnalyticsAgent
 from backend.security_sandbox import SecuritySandbox
 from backend.workflows import workflow_engine
+from backend.migrations import MigrationAgent, MigrationManager
+from backend.timemachine import TimeMachineManager
+from backend.etl import ETLPipelineBuilder
+
 
 app = FastAPI(title=settings.PROJECT_NAME, version="1.0.0")
 
@@ -262,6 +266,166 @@ def trigger_workflow_manually(w_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Models for New Advanced Features
+class ProposeMigrationModel(BaseModel):
+    connection_id: str
+    goal: str
+
+class ExecuteMigrationModel(BaseModel):
+    connection_id: str
+    name: str
+    migration_sql: str
+    rollback_sql: str
+
+class RollbackMigrationModel(BaseModel):
+    connection_id: str
+    migration_id: str
+
+class CreateSnapshotModel(BaseModel):
+    connection_id: str
+    label: str
+
+class QuerySnapshotModel(BaseModel):
+    snapshot_id: str
+    query: str
+
+class RestoreSnapshotModel(BaseModel):
+    connection_id: str
+    snapshot_id: str
+
+class IngestETLModel(BaseModel):
+    connection_id: str
+    table_name: str
+    raw_content: str
+
+# ----------------- Schema Migrations Endpoints -----------------
+@app.get("/api/v1/migrations")
+def list_migrations():
+    return MigrationManager.get_migrations()
+
+@app.post("/api/v1/migrations/propose")
+def propose_migration(payload: ProposeMigrationModel):
+    conns = vault.get_connections()
+    conn = next((c for c in conns if c["id"] == payload.connection_id), None)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    
+    try:
+        schemas = DBExecutor.get_schema(conn["type"], conn["config"])
+        agent = MigrationAgent()
+        proposal = agent.propose_migration(conn["type"], schemas, payload.goal)
+        
+        # Test in sandbox to verify safety
+        test_res = MigrationManager.test_migration_in_sandbox(conn["type"], conn["config"], proposal.get("migration_sql", ""))
+        proposal["sandbox_validation"] = test_res
+        
+        return proposal
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Migration proposal failed: {str(e)}")
+
+@app.post("/api/v1/migrations/execute")
+def execute_migration(payload: ExecuteMigrationModel):
+    conns = vault.get_connections()
+    conn = next((c for c in conns if c["id"] == payload.connection_id), None)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+        
+    res = MigrationManager.apply_migration(
+        conn_id=payload.connection_id,
+        name=payload.name,
+        db_type=conn["type"],
+        config=conn["config"],
+        migration_sql=payload.migration_sql,
+        rollback_sql=payload.rollback_sql
+    )
+    if not res.get("success", False):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to apply migration"))
+        
+    add_audit_log("MIGRATION_APPLIED", f"Applied schema migration '{payload.name}' to {conn['name']}")
+    return res
+
+@app.post("/api/v1/migrations/rollback")
+def rollback_migration(payload: RollbackMigrationModel):
+    conns = vault.get_connections()
+    conn = next((c for c in conns if c["id"] == payload.connection_id), None)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+        
+    res = MigrationManager.rollback_migration(payload.migration_id, conn["type"], conn["config"])
+    if not res.get("success", False):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to roll back migration"))
+        
+    add_audit_log("MIGRATION_ROLLEDBACK", f"Rolled back migration ID: {payload.migration_id} on {conn['name']}")
+    return res
+
+# ----------------- Time Machine Endpoints -----------------
+@app.get("/api/v1/timemachine/snapshots")
+def list_snapshots(connection_id: str = Query(..., description="Connection ID")):
+    return TimeMachineManager.get_snapshots(connection_id)
+
+@app.post("/api/v1/timemachine/snapshots")
+def create_snapshot(payload: CreateSnapshotModel):
+    conns = vault.get_connections()
+    conn = next((c for c in conns if c["id"] == payload.connection_id), None)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+        
+    res = TimeMachineManager.create_snapshot(payload.connection_id, conn["type"], conn["config"], payload.label)
+    if not res.get("success", False):
+        raise HTTPException(status_code=500, detail=res.get("error", "Failed to create snapshot"))
+        
+    add_audit_log("SNAPSHOT_CREATED", f"Created database checkpoint '{payload.label}' for {conn['name']}")
+    return res
+
+@app.post("/api/v1/timemachine/query")
+def query_snapshot(payload: QuerySnapshotModel):
+    res = TimeMachineManager.query_snapshot(payload.snapshot_id, payload.query)
+    if not res.get("success", False):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to query snapshot"))
+    return res
+
+@app.post("/api/v1/timemachine/restore")
+def restore_snapshot(payload: RestoreSnapshotModel):
+    conns = vault.get_connections()
+    conn = next((c for c in conns if c["id"] == payload.connection_id), None)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+        
+    res = TimeMachineManager.restore_snapshot(payload.snapshot_id, conn["type"], conn["config"])
+    if not res.get("success", False):
+        raise HTTPException(status_code=500, detail=res.get("error", "Failed to restore snapshot"))
+        
+    # Trigger rescan to align frontend schemas
+    try:
+        schema = DBExecutor.get_schema(conn["type"], conn["config"])
+        schema_store.index_database_schema(payload.connection_id, schema)
+    except:
+        pass
+        
+    add_audit_log("SNAPSHOT_RESTORED", f"Restored live database to checkpoint {payload.snapshot_id} on {conn['name']}")
+    return res
+
+# ----------------- Autonomous ETL Ingestion Endpoints -----------------
+@app.post("/api/v1/etl/ingest")
+def ingest_data(payload: IngestETLModel):
+    conns = vault.get_connections()
+    conn = next((c for c in conns if c["id"] == payload.connection_id), None)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Connection not found")
+        
+    res = ETLPipelineBuilder.ingest_data(
+        conn_id=payload.connection_id,
+        db_type=conn["type"],
+        config=conn["config"],
+        table_name=payload.table_name,
+        raw_content=payload.raw_content
+    )
+    if not res.get("success", False):
+        raise HTTPException(status_code=400, detail=res.get("error", "ETL ingestion failed"))
+        
+    add_audit_log("DATA_INGESTED", f"Ingested raw data into table '{res.get('table_name')}' ({res.get('rows_inserted')} rows) for {conn['name']}")
+    return res
+
 # Audit Logs
 @app.get("/api/v1/audit-logs")
 def get_audit_logs():
@@ -273,6 +437,7 @@ def get_audit_logs():
         except:
             return []
     return []
+
 
 if __name__ == "__main__":
     import uvicorn

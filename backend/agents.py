@@ -84,13 +84,16 @@ class BaseAgent:
             elif "add employee" in prompt_lower or "add user" in prompt_lower or "insert" in prompt_lower:
                 sql = "INSERT INTO users (name, email, role, status) VALUES ('Alex', 'alex_new@queryflow.ai', 'Customer', 'Active');"
                 explanation = "Inserts a new user record for Alex."
+            elif "map" in prompt_lower or "store" in prompt_lower or "distance" in prompt_lower or "location" in prompt_lower or "latitude" in prompt_lower:
+                sql = "SELECT u.name AS user_name, u.latitude, u.longitude, s.name AS store_name, s.latitude AS store_lat, s.longitude AS store_lng FROM users u CROSS JOIN stores s WHERE u.status = 'Active' LIMIT 15;"
+                explanation = "Generates a spatial cross join to locate active users and match them against store hub coordinates for mapping."
                 
             if json_mode:
                 return json.dumps({
                     "query": sql,
                     "explanation": explanation,
                     "db_type": "sqlite",
-                    "alternative_query": "SELECT SUM(amount), region FROM sales JOIN users ON sales.user_id = users.id GROUP BY region;"
+                    "alternative_query": "SELECT * FROM stores;"
                 })
             return sql
 
@@ -138,6 +141,11 @@ class BaseAgent:
                 title = "Product Stock Quantities"
                 x_axis = "name"
                 y_axis = "stock_quantity"
+            elif "latitude" in prompt_lower or "store" in prompt_lower or "location" in prompt_lower or "map" in prompt_lower:
+                chart_type = "map"
+                title = "Geospatial Customer Density Hub"
+                x_axis = "longitude"
+                y_axis = "latitude"
                 
             summary = "Insights extracted from database records matching user criteria."
             if error:
@@ -150,7 +158,8 @@ class BaseAgent:
                 "x_axis_field": x_axis,
                 "y_axis_fields": [y_axis] if y_axis else [],
                 "kpis": [
-                    {"label": "Records Found", "value": "Dynamic"}
+                    {"label": "Mapped Hubs", "value": "3 Stores"},
+                    {"label": "Active Users Plotted", "value": "7 Users"}
                 ]
             })
             
@@ -357,14 +366,18 @@ class AnalyticsAgent(BaseAgent):
             You must produce a friendly text explanation of the results and select the best visualization layout.
             Return a JSON object containing:
             - 'summary': A markdown text summary of the results and trends.
-            - 'chart_type': One of 'table', 'bar', 'line', 'pie', 'area', 'scatter'.
+            - 'chart_type': One of 'table', 'bar', 'line', 'pie', 'area', 'scatter', 'map'.
             - 'chart_title': Suggest a title.
-            - 'x_axis_field': Name of column for horizontal axis.
-            - 'y_axis_fields': List of column names for quantitative values.
-            - 'kpis': List of objects containing {{'label': str, 'value': str}} representing computed metrics (like Total Sum, Max, or Count)."""
+            - 'x_axis_field': Name of column for horizontal axis (e.g. longitude for maps).
+            - 'y_axis_fields': List of column names for quantitative values (e.g. ['latitude'] for maps).
+            - 'kpis': List of objects containing {'label': str, 'value': str} representing computed metrics (like Total Sum, Max, or Count)."""
         )
 
     def analyze_results(self, user_query: str, query: str, columns: List[str], rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # Check if dataset has spatial features to suggest map
+        columns_lower = [c.lower() for c in columns]
+        has_coords = ("latitude" in columns_lower or "lat" in columns_lower) and ("longitude" in columns_lower or "lng" in columns_lower or "lon" in columns_lower)
+        
         prompt = f"""
         User Query: {user_query}
         Executed Database Query: {query}
@@ -372,10 +385,11 @@ class AnalyticsAgent(BaseAgent):
         Dataset sample (first 10 records): {json.dumps(rows[:10])}
         
         Analyze this dataset and select the best visual representation (charts/KPIs).
+        Note: If the columns contain geographical markers or coordinates (latitude, longitude), suggest 'map' for chart_type.
         Return JSON format:
         {{
             "summary": "Summary of data observations...",
-            "chart_type": "bar/line/pie/area/table",
+            "chart_type": "bar/line/pie/area/table/map",
             "chart_title": "Title",
             "x_axis_field": "column_name",
             "y_axis_fields": ["column_name_2"],
@@ -384,17 +398,26 @@ class AnalyticsAgent(BaseAgent):
         """
         response_text = self._call_llm(prompt, json_mode=True)
         try:
-            return json.loads(response_text)
+            res = json.loads(response_text)
+            if has_coords and res.get("chart_type") != "map":
+                res["chart_type"] = "map"
+                # Determine lat/lng col names
+                lat_col = next((c for c in columns if c.lower() in ["latitude", "lat"]), "latitude")
+                lng_col = next((c for c in columns if c.lower() in ["longitude", "lng", "lon"]), "longitude")
+                res["x_axis_field"] = lng_col
+                res["y_axis_fields"] = [lat_col]
+            return res
         except Exception:
             # Fallback configuration
             return {
                 "summary": f"Retrieved {len(rows)} records matching user requirements.",
-                "chart_type": "table",
-                "chart_title": "Results",
-                "x_axis_field": "",
-                "y_axis_fields": [],
+                "chart_type": "map" if has_coords else "table",
+                "chart_title": "Geospatial Mapping" if has_coords else "Results",
+                "x_axis_field": "longitude" if has_coords else "",
+                "y_axis_fields": ["latitude"] if has_coords else [],
                 "kpis": [{"label": "Rows Counted", "value": str(len(rows))}]
             }
+
 
 
 class CopilotOrchestrator:

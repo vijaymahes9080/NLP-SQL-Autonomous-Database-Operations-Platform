@@ -334,6 +334,20 @@ class DBExecutor:
 # Generate local SQLite mock dataset
 def generate_sample_data():
     db_path = settings.SQLITE_SAMPLES_PATH
+    
+    # If the database exists but doesn't have stores table, delete it so it regenerates
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='stores';")
+            has_stores = cursor.fetchone()
+            conn.close()
+            if not has_stores:
+                os.remove(db_path)
+        except Exception:
+            pass
+
     if os.path.exists(db_path):
         return
         
@@ -348,6 +362,8 @@ def generate_sample_data():
         email TEXT UNIQUE NOT NULL,
         role TEXT NOT NULL,
         status TEXT DEFAULT 'Active',
+        latitude REAL,
+        longitude REAL,
         created_at DATE DEFAULT CURRENT_DATE
     );
     """)
@@ -375,18 +391,28 @@ def generate_sample_data():
         FOREIGN KEY (product_id) REFERENCES products(id)
     );
     """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS stores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        latitude REAL NOT NULL,
+        longitude REAL NOT NULL,
+        address TEXT
+    );
+    """)
     
     # 2. Insert mock records
     users_data = [
-        ("Alex Rivera", "alex@queryflow.ai", "Administrator", "Active", "2026-01-10"),
-        ("Sarah Jenkins", "sarah@gmail.com", "Customer", "Active", "2026-02-15"),
-        ("Marcus Vance", "marcus@yahoo.com", "Customer", "Active", "2026-03-01"),
-        ("Elena Rostova", "elena@outlook.com", "Customer", "Inactive", "2025-11-20"),
-        ("Devin Baker", "devin@gmail.com", "Customer", "Active", "2026-04-12"),
-        ("Claire Dubois", "claire@gmail.com", "Customer", "Active", "2026-05-18"),
-        ("Hiroshi Tanaka", "hiroshi@company.jp", "Manager", "Active", "2025-08-30"),
+        ("Alex Rivera", "alex@queryflow.ai", "Administrator", "Active", 37.7749, -122.4194, "2026-01-10"),
+        ("Sarah Jenkins", "sarah@gmail.com", "Customer", "Active", 37.7890, -122.4010, "2026-02-15"),
+        ("Marcus Vance", "marcus@yahoo.com", "Customer", "Active", 37.7550, -122.4220, "2026-03-01"),
+        ("Elena Rostova", "elena@outlook.com", "Customer", "Inactive", 37.7920, -122.4600, "2025-11-20"),
+        ("Devin Baker", "devin@gmail.com", "Customer", "Active", 37.7650, -122.4400, "2026-04-12"),
+        ("Claire Dubois", "claire@gmail.com", "Customer", "Active", 37.7800, -122.4300, "2026-05-18"),
+        ("Hiroshi Tanaka", "hiroshi@company.jp", "Manager", "Active", 37.8000, -122.4100, "2025-08-30"),
     ]
-    cursor.executemany("INSERT OR IGNORE INTO users (name, email, role, status, created_at) VALUES (?,?,?,?,?);", users_data)
+    cursor.executemany("INSERT OR IGNORE INTO users (name, email, role, status, latitude, longitude, created_at) VALUES (?,?,?,?,?,?,?);", users_data)
     
     products_data = [
         ("Cloud Compute Engine X1", "Cloud Services", 1200.00, 150),
@@ -417,9 +443,18 @@ def generate_sample_data():
     ]
     cursor.executemany("INSERT OR IGNORE INTO sales (user_id, product_id, quantity, amount, sale_date, region) VALUES (?,?,?,?,?,?);", sales_data)
     
+    # Generate store hubs
+    stores_data = [
+        ("Downtown SF Hub", 37.7850, -122.4060, "845 Market St, San Francisco, CA"),
+        ("Mission District Store", 37.7599, -122.4148, "2400 Mission St, San Francisco, CA"),
+        ("Presidio Outpost", 37.7980, -122.4660, "Montgomery St, San Francisco, CA")
+    ]
+    cursor.executemany("INSERT OR IGNORE INTO stores (name, latitude, longitude, address) VALUES (?,?,?,?);", stores_data)
+
     conn.commit()
     conn.close()
 
 # Generate initial seed data on load
 generate_sample_data()
 vault = ConnectionVault()
+

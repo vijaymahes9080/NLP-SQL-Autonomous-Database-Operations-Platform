@@ -110,5 +110,44 @@ class TestQueryFlowBackend(unittest.TestCase):
         self.assertTrue(res["security"]["safe_to_execute"])
         print("[OK] Multi-Agent Orchestrator Pipeline Verified.")
 
+    def test_07_advanced_features(self):
+        from backend.migrations import MigrationManager
+        from backend.timemachine import TimeMachineManager
+        from backend.etl import ETLPipelineBuilder
+        
+        conns = ConnectionVault().get_connections()
+        sample_config = conns[0]["config"]
+        
+        # 1. Test Migrations Sandbox
+        test_mig = MigrationManager.test_migration_in_sandbox(
+            "sqlite", sample_config, "CREATE INDEX IF NOT EXISTS idx_users_test_role ON users(role);"
+        )
+        self.assertTrue(test_mig["success"])
+        
+        # 2. Test Time Machine Snapshots
+        snap_res = TimeMachineManager.create_snapshot("sample_sqlite", "sqlite", sample_config, "Test Checkpoint")
+        self.assertTrue(snap_res["success"])
+        snap_id = snap_res["snapshot"]["id"]
+        
+        # Test Query Snapshot
+        q_res = TimeMachineManager.query_snapshot(snap_id, "SELECT COUNT(*) as c FROM users;")
+        self.assertTrue(q_res["success"])
+        self.assertEqual(q_res["rows"][0]["c"], 7)
+        
+        # 3. Test ETL raw CSV ingestion
+        csv_data = "name,email,role,status\n\"ETL Tester\",\"etl@test.com\",\"Tester\",\"Active\""
+        etl_res = ETLPipelineBuilder.ingest_data("sample_sqlite", "sqlite", sample_config, "etl_test_table", csv_data)
+        self.assertTrue(etl_res["success"])
+        self.assertEqual(etl_res["rows_inserted"], 1)
+        self.assertEqual(etl_res["table_name"], "etl_test_table")
+        
+        # Clean up temporary snapshot file
+        try:
+            os.remove(snap_res["snapshot"]["path"])
+        except:
+            pass
+            
+        print("[OK] Migrations Sandbox, Time Machine Snapshots & ETL Ingest Verified.")
+
 if __name__ == "__main__":
     unittest.main()

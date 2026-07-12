@@ -26,7 +26,8 @@ import {
   Settings,
   ShieldCheck,
   TrendingUp,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Mic
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -94,7 +95,7 @@ interface AuditLog {
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<"copilot" | "connections" | "sandbox" | "workflows" | "audit">("copilot");
+  const [activeTab, setActiveTab] = useState<"copilot" | "connections" | "sandbox" | "workflows" | "audit" | "migrations" | "timemachine" | "etl">("copilot");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [selectedConnId, setSelectedConnId] = useState<string>("sample_sqlite");
   
@@ -138,12 +139,53 @@ export default function Home() {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [auditLoading, setAuditLoading] = useState(false);
 
+  // Schema Migrations States
+  const [migrationGoal, setMigrationGoal] = useState("Speed up user lookups by adding an index on email");
+  const [migrationProposal, setMigrationProposal] = useState<any>(null);
+  const [proposingMigration, setProposingMigration] = useState(false);
+  const [applyingMigration, setApplyingMigration] = useState(false);
+  const [migrationName, setMigrationName] = useState("Add User Email Index");
+  const [migrationsList, setMigrationsList] = useState<any[]>([]);
+
+  // Time Machine Checkpoints States
+  const [snapshots, setSnapshots] = useState<any[]>([]);
+  const [newSnapshotLabel, setNewSnapshotLabel] = useState("");
+  const [creatingSnapshot, setCreatingSnapshot] = useState(false);
+  const [timeMachineQuery, setTimeMachineQuery] = useState("SELECT * FROM users LIMIT 10;");
+  const [timeMachineResult, setTimeMachineResult] = useState<any>(null);
+  const [timeMachineLoading, setTimeMachineLoading] = useState(false);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState("");
+  const [restoringSnapshot, setRestoringSnapshot] = useState(false);
+
+  // ETL Ingestion States
+  const [etlTableName, setEtlTableName] = useState("imported_leads");
+  const [etlRawContent, setEtlRawContent] = useState(`name,email,role,status,latitude,longitude
+"John Doe","john@gmail.com","Customer","Active",37.7749,-122.4194
+"Jane Smith","jane@yahoo.com","Customer","Active",37.7890,-122.4010
+"Bob Johnson","bob@gmail.com","Customer","Inactive",37.7550,-122.4220`);
+  const [etlResult, setEtlResult] = useState<any>(null);
+  const [etlLoading, setEtlLoading] = useState(false);
+  const [etlError, setEtlError] = useState<string | null>(null);
+
+  // Web Speech API Voice state
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
   // Fetch connections and initial state
   useEffect(() => {
     fetchConnections();
     fetchWorkflows();
     fetchAuditLogs();
+    fetchMigrations();
   }, []);
+
+  // Fetch checkpoints whenever connection selection changes
+  useEffect(() => {
+    if (selectedConnId) {
+      fetchSnapshots();
+    }
+  }, [selectedConnId]);
+
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -452,6 +494,256 @@ export default function Home() {
     }
   };
 
+  // Schema Migrations Actions
+  const fetchMigrations = async () => {
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/migrations");
+      if (res.ok) {
+        setMigrationsList(await res.json());
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleProposeMigration = async () => {
+    if (!migrationGoal.trim()) return;
+    setProposingMigration(true);
+    setMigrationProposal(null);
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/migrations/propose", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json_encoded({ connection_id: selectedConnId, goal: migrationGoal })
+      });
+      if (res.ok) {
+        setMigrationProposal(await res.json());
+      } else {
+        alert("Failed to generate migration suggestion.");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setProposingMigration(false);
+    }
+  };
+
+  const handleExecuteMigration = async () => {
+    if (!migrationProposal) return;
+    setApplyingMigration(true);
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/migrations/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json_encoded({
+          connection_id: selectedConnId,
+          name: migrationName,
+          migration_sql: migrationProposal.migration_sql,
+          rollback_sql: migrationProposal.rollback_sql
+        })
+      });
+      if (res.ok) {
+        alert("Migration applied successfully!");
+        setMigrationProposal(null);
+        fetchMigrations();
+        fetchAuditLogs();
+        // Rescan target connection schema in vector RAG
+        handleRescanConnection(selectedConnId);
+      } else {
+        const err = await res.json();
+        alert(`Failed to apply migration: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setApplyingMigration(false);
+    }
+  };
+
+  const handleRollbackMigration = async (migId: string) => {
+    if (!confirm("Are you sure you want to roll back this migration?")) return;
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/migrations/rollback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json_encoded({ connection_id: selectedConnId, migration_id: migId })
+      });
+      if (res.ok) {
+        alert("Migration rolled back successfully!");
+        fetchMigrations();
+        fetchAuditLogs();
+        handleRescanConnection(selectedConnId);
+      } else {
+        const err = await res.json();
+        alert(`Failed to roll back: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Time Machine Snapshots Actions
+  const fetchSnapshots = async () => {
+    if (!selectedConnId) return;
+    try {
+      const res = await fetch(`http://localhost:8000/api/v1/timemachine/snapshots?connection_id=${selectedConnId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSnapshots(data);
+        if (data.length > 0 && !selectedSnapshotId) {
+          setSelectedSnapshotId(data[0].id);
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleCreateSnapshot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSnapshotLabel.trim()) return;
+    setCreatingSnapshot(true);
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/timemachine/snapshots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json_encoded({ connection_id: selectedConnId, label: newSnapshotLabel })
+      });
+      if (res.ok) {
+        setNewSnapshotLabel("");
+        fetchSnapshots();
+        fetchAuditLogs();
+      } else {
+        alert("Failed to create snapshot database checkpoint.");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setCreatingSnapshot(false);
+    }
+  };
+
+  const handleQuerySnapshot = async () => {
+    if (!selectedSnapshotId || !timeMachineQuery.trim()) return;
+    setTimeMachineLoading(true);
+    setTimeMachineResult(null);
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/timemachine/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json_encoded({ snapshot_id: selectedSnapshotId, query: timeMachineQuery })
+      });
+      if (res.ok) {
+        setTimeMachineResult(await res.json());
+      } else {
+        const err = await res.json();
+        alert(`Query failed: ${err.detail || "Unknown error"}`);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setTimeMachineLoading(false);
+    }
+  };
+
+  const handleRestoreSnapshot = async (snapId: string) => {
+    if (!confirm("⚠️ WARNING: This will completely replace the production database with this snapshot. All subsequent changes will be overwritten. Proceed?")) return;
+    setRestoringSnapshot(true);
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/timemachine/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json_encoded({ connection_id: selectedConnId, snapshot_id: snapId })
+      });
+      if (res.ok) {
+        alert("Database rolled back to selected snapshot successfully!");
+        fetchSnapshots();
+        fetchAuditLogs();
+        handleRescanConnection(selectedConnId);
+      } else {
+        alert("Failed to restore snapshot checkpoint.");
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setRestoringSnapshot(false);
+    }
+  };
+
+  // ETL Ingestion Actions
+  const handleETLIngest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!etlTableName.trim() || !etlRawContent.trim()) return;
+    setEtlLoading(true);
+    setEtlError(null);
+    setEtlResult(null);
+    try {
+      const res = await fetch("http://localhost:8000/api/v1/etl/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: json_encoded({
+          connection_id: selectedConnId,
+          table_name: etlTableName,
+          raw_content: etlRawContent
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEtlResult(data);
+        fetchAuditLogs();
+        fetchConnections();
+      } else {
+        const err = await res.json();
+        setEtlError(err.detail || "ETL Ingestion execution error.");
+      }
+    } catch (e: any) {
+      setEtlError(e.message || "Server connection failed.");
+    } finally {
+      setEtlLoading(false);
+    }
+  };
+
+  // Speech Recognition API Action
+  const toggleSpeechRecognition = () => {
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Web Speech API is not supported in this browser. Please use Chrome or Safari.");
+      return;
+    }
+
+    const rec = new SpeechRecognition();
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.lang = "en-US";
+
+    rec.onstart = () => {
+      setIsListening(true);
+    };
+
+    rec.onresult = (event: any) => {
+      const text = event.results[0][0].transcript;
+      setChatInput(text);
+    };
+
+    rec.onerror = (event: any) => {
+      console.error("Speech error", event);
+      setIsListening(false);
+    };
+
+    rec.onend = () => {
+      setIsListening(false);
+    };
+
+    recognitionRef.current = rec;
+    rec.start();
+  };
+
   // Export Results Actions
   const exportData = (format: "json" | "csv") => {
     if (!sandboxResult || !sandboxResult.rows) return;
@@ -559,6 +851,48 @@ export default function Home() {
             >
               <Terminal className="h-4.5 w-4.5" />
               <span>SQL Sandbox Playground</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab("migrations");
+                fetchMigrations();
+              }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
+                activeTab === "migrations"
+                  ? "bg-indigo-600/10 text-indigo-400 border-l-2 border-indigo-500"
+                  : "text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200"
+              }`}
+            >
+              <TrendingUp className="h-4.5 w-4.5" />
+              <span>Self-Healing Migrations</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab("timemachine");
+                fetchSnapshots();
+              }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
+                activeTab === "timemachine"
+                  ? "bg-indigo-600/10 text-indigo-400 border-l-2 border-indigo-500"
+                  : "text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200"
+              }`}
+            >
+              <RefreshCw className="h-4.5 w-4.5" />
+              <span>Database Time Machine</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("etl")}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
+                activeTab === "etl"
+                  ? "bg-indigo-600/10 text-indigo-400 border-l-2 border-indigo-500"
+                  : "text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200"
+              }`}
+            >
+              <FileSpreadsheet className="h-4.5 w-4.5" />
+              <span>Data-Genie ETL Ingest</span>
             </button>
 
             <button
@@ -731,10 +1065,24 @@ export default function Home() {
                   type="text"
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
-                  placeholder="e.g. 'Show total sales from last month grouped by region' or 'Find inactive customers'..."
-                  className="flex-1 bg-zinc-950 border border-zinc-800 hover:border-zinc-700 focus:border-indigo-500 rounded-xl px-4 py-3 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
+                  placeholder={isListening ? "Listening... Speak your database question..." : "e.g. 'Show total sales from last month grouped by region' or 'Find inactive customers'..."}
+                  className={`flex-1 bg-zinc-950 border rounded-xl px-4 py-3 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all ${
+                    isListening ? "border-red-500/50 ring-1 ring-red-500/30 animate-pulse bg-red-950/10" : "border-zinc-800 hover:border-zinc-700 focus:border-indigo-500"
+                  }`}
                   disabled={chatLoading}
                 />
+                <button
+                  type="button"
+                  onClick={toggleSpeechRecognition}
+                  className={`px-4 rounded-xl flex items-center justify-center border transition-all cursor-pointer ${
+                    isListening 
+                      ? "bg-red-600 hover:bg-red-700 text-white border-red-500" 
+                      : "bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                  }`}
+                  title="Voice Command Mode"
+                >
+                  <Mic className={`h-4.5 w-4.5 ${isListening ? 'animate-bounce' : ''}`} />
+                </button>
                 <button
                   type="submit"
                   disabled={chatLoading || !chatInput.trim()}
@@ -744,7 +1092,7 @@ export default function Home() {
                 </button>
               </form>
               <div className="flex justify-center gap-4 mt-2.5 text-[11px] text-zinc-500 font-medium">
-                <button type="button" onClick={() => setChatInput("Show total sales from last month grouped by region")} className="hover:text-indigo-400 transition">Show sales by region</button>
+                <button type="button" onClick={() => setChatInput("Show active customers map locations")} className="hover:text-indigo-400 transition">Show locations map</button>
                 <span>•</span>
                 <button type="button" onClick={() => setChatInput("Find inactive customers")} className="hover:text-indigo-400 transition">Find inactive customers</button>
                 <span>•</span>
@@ -1099,6 +1447,81 @@ export default function Home() {
                                   <Area key={f} type="monotone" dataKey={f} fill={COLORS[i % COLORS.length] + "20"} stroke={COLORS[i % COLORS.length]} strokeWidth={2} />
                                 ))}
                               </AreaChart>
+                            ) : sandboxResult.analytics.chart_type === "map" ? (
+                              <div className="relative w-full h-full flex flex-col md:flex-row gap-4 bg-zinc-950 p-3 rounded-lg border border-zinc-800/60 overflow-hidden min-h-[300px]">
+                                <div className="flex-1 relative min-h-[220px] bg-zinc-900/40 rounded border border-zinc-850 overflow-hidden">
+                                  {/* Render high-tech grid background */}
+                                  <svg className="absolute inset-0 w-full h-full text-zinc-800" stroke="currentColor" strokeWidth="0.5" fill="none">
+                                    <defs>
+                                      <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                                        <path d="M 20 0 L 0 0 0 20" />
+                                      </pattern>
+                                    </defs>
+                                    <rect width="100%" height="100%" fill="url(#grid)" />
+                                    {/* San Francisco simulated coastline contours */}
+                                    <path d="M 0,220 C 50,220 80,180 120,170 C 160,160 210,230 250,180 C 290,130 350,150 400,90 C 450,30 480,10 500,0" stroke="#312e81" strokeWidth="2" fill="#1e1b4b" fillOpacity="0.2" />
+                                  </svg>
+
+                                  {/* Map Pins */}
+                                  <div className="absolute inset-0">
+                                    {/* Render Store Hubs (we know their SF locations) */}
+                                    {[
+                                      { name: "Downtown SF Hub", lat: 37.7850, lng: -122.4060 },
+                                      { name: "Mission District Store", lat: 37.7599, lng: -122.4148 },
+                                      { name: "Presidio Outpost", lat: 37.7980, lng: -122.4660 }
+                                    ].map((store, i) => {
+                                      // Scale to SVG viewport 0-100%
+                                      // SF Bounds: Lat 37.74 to 37.81, Lng -122.48 to -122.39
+                                      const x = ((store.lng - (-122.48)) / ((-122.39) - (-122.48))) * 100;
+                                      const y = (1 - (store.lat - 37.74) / (37.81 - 37.74)) * 100;
+                                      return (
+                                        <div key={i} className="absolute group cursor-pointer" style={{ left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)" }}>
+                                          <span className="absolute inline-flex h-6 w-6 rounded-full bg-indigo-500/30 animate-ping"></span>
+                                          <div className="h-3 w-3 bg-indigo-500 rounded-full border border-white shadow-lg relative z-10"></div>
+                                          <div className="absolute left-4 -top-2 bg-indigo-950 border border-indigo-500/40 text-[9px] text-zinc-100 font-bold px-2 py-0.5 rounded shadow whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none">
+                                            🏢 {store.name} (Hub)
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+
+                                    {/* Render customer coordinates from dataset */}
+                                    {sandboxResult.rows
+                                      .filter((r: any) => (r.latitude || r.lat) && (r.longitude || r.lng))
+                                      .map((row: any, i: number) => {
+                                        const lat = Number(row.latitude || row.lat);
+                                        const lng = Number(row.longitude || row.lng);
+                                        const x = ((lng - (-122.48)) / ((-122.39) - (-122.48))) * 100;
+                                        const y = (1 - (lat - 37.74) / (37.81 - 37.74)) * 100;
+                                        if (x < 0 || x > 100 || y < 0 || y > 100) return null;
+                                        return (
+                                          <div key={i} className="absolute group cursor-pointer" style={{ left: `${x}%`, top: `${y}%`, transform: "translate(-50%, -50%)" }}>
+                                            <div className="h-2 w-2 bg-emerald-400 rounded-full border border-zinc-950 shadow-md relative z-10"></div>
+                                            <div className="absolute left-3 -top-2 bg-zinc-950 border border-zinc-800 text-[8px] text-zinc-300 px-1.5 py-0.5 rounded shadow whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-20 pointer-events-none font-sans font-medium">
+                                              📍 {row.name || row.user_name || "Customer"}
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                  </div>
+                                </div>
+
+                                {/* Map Sidebar / Legend */}
+                                <div className="w-full md:w-44 text-[10px] space-y-2.5 bg-zinc-900/60 p-3 rounded border border-zinc-800/80 font-sans">
+                                  <div className="font-bold text-zinc-300 uppercase tracking-wider border-b border-zinc-850 pb-1.5">Map Legend</div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="h-2.5 w-2.5 bg-indigo-500 rounded-full border border-white"></span>
+                                    <span className="text-zinc-400 font-medium">Store Hub Center</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="h-2 w-2 bg-emerald-400 rounded-full font-bold"></span>
+                                    <span className="text-zinc-400 font-medium">Customer Pin</span>
+                                  </div>
+                                  <div className="border-t border-zinc-850 pt-2 text-zinc-500 italic leading-snug">
+                                    Plotted points indicate active geographic coordinate intersections within San Francisco bay limits.
+                                  </div>
+                                </div>
+                              </div>
                             ) : (
                               <PieChart>
                                 <Pie
@@ -1202,6 +1625,457 @@ export default function Home() {
                 )}
               </div>
 
+            </div>
+          </div>
+        )}
+
+        {activeTab === "migrations" && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div>
+              <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+                <TrendingUp className="h-5 w-5 text-indigo-400" />
+                Self-Healing Schema Migrations & Optimization
+              </h2>
+              <p className="text-xs text-zinc-400">
+                Identify database performance bottlenecks. AI generates DDL migrations and rollbacks, then dry-runs them in the isolation sandbox against query logs.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+              {/* Proposal wizard */}
+              <div className="xl:col-span-2 space-y-4">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
+                  <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-wider">Optimize Database Schema</h3>
+                  
+                  <div className="space-y-3">
+                    <label className="block text-[10px] text-zinc-400 uppercase tracking-wider font-bold">Migration Goal / Intent</label>
+                    <textarea
+                      value={migrationGoal}
+                      onChange={(e) => setMigrationGoal(e.target.value)}
+                      rows={3}
+                      placeholder="e.g. 'Optimize sales lookup query' or 'Add birthday date column to users'..."
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-sans resize-none"
+                    />
+                  </div>
+
+                  <button
+                    onClick={handleProposeMigration}
+                    disabled={proposingMigration || !migrationGoal.trim()}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-600/40 text-white rounded-lg text-xs font-semibold flex items-center gap-2 transition cursor-pointer"
+                  >
+                    {proposingMigration ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin" /> Analyzing & Generating DDL...
+                      </>
+                    ) : (
+                      "Propose Schema Optimization"
+                    )}
+                  </button>
+                </div>
+
+                {/* Proposal Result Review card */}
+                {migrationProposal && (
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-5">
+                    <div className="border-b border-zinc-800 pb-3 flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-zinc-100">PROPOSED AI MIGRATION SCHEMA</h4>
+                      <span className="text-[10px] bg-indigo-950 text-indigo-400 font-semibold px-2 py-0.5 rounded border border-indigo-900/50">
+                        DRY-RUN VALIDATED
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-zinc-400 space-y-1">
+                      <span className="font-semibold text-zinc-300">Design Rationale:</span>
+                      <p className="leading-relaxed bg-zinc-950 p-3 rounded-lg border border-zinc-850">{migrationProposal.reasoning}</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-1.5">
+                        <span className="block text-[10px] text-zinc-400 uppercase tracking-wider font-bold">Migration DDL Script</span>
+                        <pre className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 font-mono text-[11px] text-zinc-300 overflow-x-auto max-h-40">{migrationProposal.migration_sql}</pre>
+                      </div>
+                      <div className="space-y-1.5">
+                        <span className="block text-[10px] text-zinc-400 uppercase tracking-wider font-bold">Rollback DDL Script</span>
+                        <pre className="bg-zinc-950 border border-zinc-800 rounded-lg p-3 font-mono text-[11px] text-zinc-300 overflow-x-auto max-h-40">{migrationProposal.rollback_sql}</pre>
+                      </div>
+                    </div>
+
+                    {/* Sandbox Dryrun Report card */}
+                    {migrationProposal.sandbox_validation && (
+                      <div className={`p-4 rounded-xl border flex gap-3 text-xs leading-relaxed ${
+                        migrationProposal.sandbox_validation.success
+                          ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                          : "bg-red-500/10 border-red-500/30 text-red-400"
+                      }`}>
+                        {migrationProposal.sandbox_validation.success ? (
+                          <>
+                            <CheckCircle className="h-5 w-5 shrink-0 mt-0.5" />
+                            <div>
+                              <h5 className="font-bold">Sandbox Dry-Run Check Passed</h5>
+                              <p className="text-[11px] text-zinc-400 mt-1">
+                                Applied migration successfully in an isolated database container. Tested {migrationProposal.sandbox_validation.passed_count} regression queries against the modified schema. 0 errors detected.
+                              </p>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+                            <div>
+                              <h5 className="font-bold">Sandbox Verification Error</h5>
+                              <p className="text-[11px] text-zinc-400 mt-1">
+                                The generated migration statements triggered database errors during isolated tests: {migrationProposal.sandbox_validation.error || "Regression query crashes detected."}
+                              </p>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Executable block */}
+                    {migrationProposal.sandbox_validation?.success && (
+                      <div className="border-t border-zinc-800 pt-4 flex flex-col md:flex-row items-end gap-3 justify-between">
+                        <div className="w-full md:w-72">
+                          <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-1 font-bold">Label this Migration</label>
+                          <input
+                            type="text"
+                            value={migrationName}
+                            onChange={(e) => setMigrationName(e.target.value)}
+                            className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none"
+                          />
+                        </div>
+                        <button
+                          onClick={handleExecuteMigration}
+                          disabled={applyingMigration}
+                          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+                        >
+                          {applyingMigration ? "Applying..." : "Apply Migration to Production"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* History index ledger */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Migration Ledger</h3>
+                
+                <div className="space-y-3">
+                  {migrationsList.length === 0 ? (
+                    <div className="p-6 text-center text-xs text-zinc-500 border border-zinc-850 border-dashed rounded-xl">
+                      No applied schema migrations logged.
+                    </div>
+                  ) : (
+                    migrationsList.map((m) => (
+                      <div key={m.id} className="p-4 bg-zinc-900 border border-zinc-800 rounded-xl space-y-3">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h4 className="font-bold text-xs text-zinc-100">{m.name}</h4>
+                            <span className="text-[9px] text-zinc-500 block mt-0.5">{new Date(m.applied_at).toLocaleString()}</span>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold ${
+                            m.status === "applied" 
+                              ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+                              : "bg-zinc-950 text-zinc-500 border border-zinc-850"
+                          }`}>
+                            {m.status === "applied" ? "Applied" : "Rolled Back"}
+                          </span>
+                        </div>
+                        
+                        <pre className="bg-zinc-950 p-2.5 rounded border border-zinc-850 font-mono text-[10px] text-zinc-400 overflow-x-auto max-h-20">{m.migration_sql}</pre>
+                        
+                        {m.status === "applied" && (
+                          <button
+                            onClick={() => handleRollbackMigration(m.id)}
+                            className="text-[10px] text-red-400 hover:text-red-300 font-semibold flex items-center gap-1 mt-1 transition cursor-pointer"
+                          >
+                            <Trash2 className="h-3 w-3" /> Rollback Migration
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "timemachine" && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div>
+              <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+                <RefreshCw className="h-5 w-5 text-indigo-400" />
+                Database Time Machine snapshotted checkpoints
+              </h2>
+              <p className="text-xs text-zinc-400">
+                Create static backups before risk operations, execute queries against specific historical snapshots, and restore the database state in seconds.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+              {/* Left pane: Checkpoints & Ingestion */}
+              <div className="space-y-6">
+                {/* Create snap form */}
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
+                  <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-wider">Create Checkpoint Snapshot</h3>
+                  <form onSubmit={handleCreateSnapshot} className="space-y-3">
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-1 font-bold">Checkpoint Label</label>
+                      <input
+                        type="text"
+                        value={newSnapshotLabel}
+                        onChange={(e) => setNewSnapshotLabel(e.target.value)}
+                        placeholder="e.g. 'Before bulk user delete'"
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={creatingSnapshot || !newSnapshotLabel.trim()}
+                      className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-600/40 text-white rounded-lg text-xs font-semibold transition cursor-pointer"
+                    >
+                      {creatingSnapshot ? "Saving Snapshot..." : "Save Checkpoint"}
+                    </button>
+                  </form>
+                </div>
+
+                {/* Timeline visual */}
+                <div className="space-y-4">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Historical Timeline</h3>
+                  <div className="space-y-3">
+                    {snapshots.length === 0 ? (
+                      <div className="p-8 text-center text-xs text-zinc-500 border border-zinc-850 border-dashed rounded-xl">
+                        No checkpoints taken for this connection yet.
+                      </div>
+                    ) : (
+                      snapshots.map((snap) => (
+                        <div key={snap.id} className={`p-4 bg-zinc-900 border rounded-xl space-y-3 transition ${
+                          selectedSnapshotId === snap.id ? 'border-indigo-500/80' : 'border-zinc-800'
+                        }`}>
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h4 className="font-bold text-xs text-zinc-100">{snap.label}</h4>
+                              <span className="text-[9px] text-zinc-500 block mt-0.5">{new Date(snap.timestamp).toLocaleString()}</span>
+                            </div>
+                            <span className="text-[9px] text-zinc-400 font-mono bg-zinc-950 px-2 py-0.5 rounded">
+                              {snap.id}
+                            </span>
+                          </div>
+
+                          <div className="flex gap-2 text-[10px] font-semibold pt-1">
+                            <button
+                              onClick={() => setSelectedSnapshotId(snap.id)}
+                              className={`flex-1 py-1.5 border rounded-lg transition cursor-pointer ${
+                                selectedSnapshotId === snap.id
+                                  ? 'bg-indigo-600/10 border-indigo-500 text-indigo-400'
+                                  : 'border-zinc-850 hover:bg-zinc-800 text-zinc-400'
+                              }`}
+                            >
+                              Select to Query
+                            </button>
+                            <button
+                              onClick={() => handleRestoreSnapshot(snap.id)}
+                              disabled={restoringSnapshot}
+                              className="flex-1 py-1.5 bg-red-950/20 hover:bg-red-950/60 border border-red-900/40 hover:border-red-500 text-red-400 rounded-lg transition cursor-pointer"
+                            >
+                              Restore Live DB
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Right pane: Snapshot Playground */}
+              <div className="lg:col-span-2 space-y-4">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
+                  <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-wider flex items-center gap-2">
+                    <Terminal className="h-4.5 w-4.5 text-indigo-400" />
+                    Query snapshot checkpoint sandbox
+                  </h3>
+
+                  {!selectedSnapshotId ? (
+                    <div className="p-8 text-center text-xs text-zinc-500 leading-relaxed border border-dashed border-zinc-800 rounded-lg">
+                      Please select a snapshot from the timeline to query its isolated records.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      <div className="p-3 bg-zinc-950 border border-zinc-850 rounded-lg text-xs leading-none text-zinc-400">
+                        Querying target snapshot checkpoint: <strong className="text-indigo-400">{selectedSnapshotId}</strong>
+                      </div>
+
+                      <div className="border border-zinc-800 bg-zinc-950 p-4 rounded-xl font-mono text-xs">
+                        <textarea
+                          value={timeMachineQuery}
+                          onChange={(e) => setTimeMachineQuery(e.target.value)}
+                          rows={4}
+                          className="w-full bg-transparent border-none outline-none resize-none"
+                        />
+                      </div>
+
+                      <button
+                        onClick={handleQuerySnapshot}
+                        disabled={timeMachineLoading || !timeMachineQuery.trim()}
+                        className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
+                      >
+                        {timeMachineLoading ? "Querying Sandbox..." : "Run Query on Snapshot"}
+                      </button>
+
+                      {timeMachineResult && (
+                        <div className="space-y-3 pt-2">
+                          <div className="text-[10px] text-zinc-400 bg-zinc-950 p-2.5 rounded border border-zinc-850 leading-relaxed font-mono">
+                            {timeMachineResult.message} (Affected {timeMachineResult.rows_affected} records in snapshot)
+                          </div>
+
+                          {timeMachineResult.columns && timeMachineResult.columns.length > 0 && (
+                            <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+                              <div className="overflow-x-auto max-h-60">
+                                <table className="w-full text-left border-collapse text-[10px]">
+                                  <thead>
+                                    <tr className="bg-zinc-950 border-b border-zinc-800 text-zinc-400 font-semibold">
+                                      {timeMachineResult.columns.map((c: string) => (
+                                        <th key={c} className="p-2.5 uppercase tracking-wider">{c}</th>
+                                      ))}
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-zinc-800/60 font-mono text-zinc-300">
+                                    {timeMachineResult.rows.map((row: any, idx: number) => (
+                                      <tr key={idx} className="hover:bg-zinc-800/20">
+                                        {timeMachineResult.columns.map((c: string) => (
+                                          <td key={c} className="p-2.5 truncate max-w-xs">{String(row[c] !== undefined ? row[c] : "")}</td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === "etl" && (
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div>
+              <h2 className="text-lg font-bold text-zinc-100 flex items-center gap-2">
+                <FileSpreadsheet className="h-5 w-5 text-indigo-400" />
+                Data-Genie ETL Ingest Pipeline
+              </h2>
+              <p className="text-xs text-zinc-400">
+                Import CSVs, JSON arrays, or unstructured text files. The Multi-Agent pipeline infers target columns, validates structures, and heals schema drift automatically.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+              {/* Upload Wizard */}
+              <div className="xl:col-span-2 space-y-4">
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
+                  <h3 className="text-xs font-bold text-zinc-100 uppercase tracking-wider">Upload Raw Ingestion Data</h3>
+                  
+                  <form onSubmit={handleETLIngest} className="space-y-4">
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-1 font-bold">Target Table Name</label>
+                      <input
+                        type="text"
+                        value={etlTableName}
+                        onChange={(e) => setEtlTableName(e.target.value)}
+                        placeholder="imported_leads"
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] text-zinc-400 uppercase tracking-wider mb-1 font-bold">Raw Content (CSV or JSON or Unstructured text)</label>
+                      <textarea
+                        value={etlRawContent}
+                        onChange={(e) => setEtlRawContent(e.target.value)}
+                        rows={10}
+                        placeholder="Paste your CSV text or JSON array..."
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none font-mono resize-none leading-relaxed"
+                      />
+                    </div>
+
+                    {etlError && (
+                      <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
+                        {etlError}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={etlLoading || !etlTableName.trim() || !etlRawContent.trim()}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-600/40 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {etlLoading ? (
+                        <>
+                          <RefreshCw className="h-4 w-4 animate-spin" /> Ingesting & Healing Schema...
+                        </>
+                      ) : (
+                        "Import into Database"
+                      )}
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+              {/* Ingestion results pane */}
+              <div className="space-y-4">
+                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Ingestion Report</h3>
+                
+                {etlResult ? (
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 text-xs leading-relaxed">
+                    <div className="flex items-center gap-2 text-emerald-400 font-semibold">
+                      <CheckCircle className="h-5 w-5 shrink-0" /> Ingestion Completed Successfully
+                    </div>
+
+                    <div className="space-y-2 bg-zinc-950 p-3 rounded-lg border border-zinc-850">
+                      <div>
+                        <span className="text-zinc-500 font-bold block text-[10px] uppercase">Table Loaded</span>
+                        <strong className="text-zinc-200">{etlResult.table_name}</strong>
+                      </div>
+                      <div className="pt-1.5 border-t border-zinc-900">
+                        <span className="text-zinc-500 font-bold block text-[10px] uppercase">Rows Inserted</span>
+                        <strong className="text-zinc-200">{etlResult.rows_inserted} rows</strong>
+                      </div>
+                    </div>
+
+                    {etlResult.drift_actions && etlResult.drift_actions.length > 0 && (
+                      <div>
+                        <span className="block text-[10px] text-zinc-400 font-bold uppercase mb-1.5">DRIFT REMEDIATION ACTIONS</span>
+                        <ul className="space-y-1 bg-yellow-500/5 border border-yellow-500/20 p-2.5 rounded-lg text-[10px] text-yellow-400 font-mono list-disc pl-5">
+                          {etlResult.drift_actions.map((act: string, idx: number) => (
+                            <li key={idx}>{act}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div>
+                      <span className="block text-[10px] text-zinc-400 font-bold uppercase mb-1.5">Table Structure Columns</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {etlResult.columns.map((col: string, idx: number) => (
+                          <span key={idx} className="bg-zinc-950 border border-zinc-850 px-2 py-0.5 rounded text-[10px] text-zinc-300 font-mono">
+                            {col}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-8 text-center text-xs text-zinc-500 border border-zinc-850 border-dashed rounded-xl">
+                    Import stats will display here once data is ingested.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
