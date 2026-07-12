@@ -4,6 +4,8 @@ QueryFlow AI is an enterprise-grade AI Database Operating System that translates
 
 It acts as a **ChatGPT + SQL IDE + Database Administrator + Analytics Dashboard + Agentic Workflow Scheduler** combined into a unified, secure system.
 
+![QueryFlow AI Conversational Copilot UI](assets/copilot_ui.png)
+
 ---
 
 ## ✨ Core Features
@@ -52,6 +54,29 @@ It acts as a **ChatGPT + SQL IDE + Database Administrator + Analytics Dashboard 
 ├── run.ps1                   # Powershell script launching both servers in parallel
 └── README.md                 # Project handbook
 ```
+
+---
+
+## 🧠 Advanced Operations & Intelligence Suite
+
+QueryFlow AI incorporates advanced database operations subsystems for automated scaling, tracking, mapping, and loading:
+
+### 1. Self-Healing Schema Migrations & Indexing
+The system monitors query patterns and bottlenecks, uses LLMs to design optimized SQL indices or schema migrations, and tests them in sandbox environments against recent queries to verify zero regressions.
+
+### 2. Time-Travel snapshotted Checkpoints
+Take database snapshots in one click. You can run isolated queries against historical checkpoints to inspect data state transitions and roll back the live database to a checkpoint instantly.
+
+![QueryFlow AI Database Time Machine](assets/time_machine_ui.png)
+
+### 3. Spatial Density Dashboards & Voice Commands
+*   **Geospatial Clustering**: Auto-detects `latitude` and `longitude` fields in dataset returns to render custom customer density hotspot maps.
+*   **Voice Control**: Integrates native Web Speech recognition directly inside the chat interface for hands-free query creation.
+
+![QueryFlow AI Geospatial Customer Map](assets/spatial_map_ui.png)
+
+### 4. Data-Genie ETL Ingest Pipeline
+Upload raw data files (CSVs, JSON arrays, logs). Ingestion agents automatically induce target schemas, parse data, and dynamically alter tables (`ALTER TABLE ADD COLUMN`) to remediate schema drift on the fly.
 
 ---
 
