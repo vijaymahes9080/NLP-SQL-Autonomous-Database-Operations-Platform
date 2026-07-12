@@ -95,6 +95,7 @@ interface AuditLog {
 }
 
 export default function Home() {
+  const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   const [activeTab, setActiveTab] = useState<"copilot" | "connections" | "sandbox" | "workflows" | "audit" | "migrations" | "timemachine" | "etl">("copilot");
   const [connections, setConnections] = useState<Connection[]>([]);
   const [selectedConnId, setSelectedConnId] = useState<string>("sample_sqlite");
@@ -193,7 +194,7 @@ export default function Home() {
 
   const fetchConnections = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/v1/connections");
+      const res = await fetch(API_BASE + "/api/v1/connections");
       if (res.ok) {
         const data = await res.json();
         setConnections(data);
@@ -208,7 +209,7 @@ export default function Home() {
 
   const fetchWorkflows = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/v1/workflows");
+      const res = await fetch(API_BASE + "/api/v1/workflows");
       if (res.ok) {
         setWorkflows(await res.json());
       }
@@ -220,7 +221,7 @@ export default function Home() {
   const fetchAuditLogs = async () => {
     setAuditLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/audit-logs");
+      const res = await fetch(API_BASE + "/api/v1/audit-logs");
       if (res.ok) {
         setAuditLogs(await res.json());
       }
@@ -251,7 +252,7 @@ export default function Home() {
           text: m.text
         }));
 
-      const res = await fetch("http://localhost:8000/api/v1/query/copilot", {
+      const res = await fetch(API_BASE + "/api/v1/query/copilot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({
@@ -313,7 +314,7 @@ export default function Home() {
     const config = newConnType === "sqlite" ? { database_path: newConnPath } : { uri: newConnUri };
     
     try {
-      const res = await fetch("http://localhost:8000/api/v1/connections/test", {
+      const res = await fetch(API_BASE + "/api/v1/connections/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({ name: newConnName || "Test", type: newConnType, config })
@@ -333,7 +334,7 @@ export default function Home() {
     const config = newConnType === "sqlite" ? { database_path: newConnPath } : { uri: newConnUri };
     
     try {
-      const res = await fetch("http://localhost:8000/api/v1/connections", {
+      const res = await fetch(API_BASE + "/api/v1/connections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({ name: newConnName, type: newConnType, config })
@@ -361,7 +362,7 @@ export default function Home() {
     }
     if (!confirm("Are you sure you want to delete this connection profile?")) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/connections/${id}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/v1/connections/${id}`, { method: "DELETE" });
       if (res.ok) {
         fetchConnections();
         fetchAuditLogs();
@@ -373,7 +374,7 @@ export default function Home() {
 
   const handleRescanConnection = async (id: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/connections/${id}/rescan`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/v1/connections/${id}/rescan`, { method: "POST" });
       if (res.ok) {
         alert("Database structure scanned and indexed into Vector RAG successfully.");
         fetchAuditLogs();
@@ -391,7 +392,7 @@ export default function Home() {
     setPendingApprovalQuery(null);
 
     try {
-      const res = await fetch("http://localhost:8000/api/v1/query/execute", {
+      const res = await fetch(API_BASE + "/api/v1/query/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({
@@ -433,7 +434,7 @@ export default function Home() {
       : [{ type: "webhook", url: actionDest }];
 
     try {
-      const res = await fetch("http://localhost:8000/api/v1/workflows", {
+      const res = await fetch(API_BASE + "/api/v1/workflows", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({
@@ -461,7 +462,7 @@ export default function Home() {
 
   const handleDeleteWorkflow = async (id: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/workflows/${id}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/v1/workflows/${id}`, { method: "DELETE" });
       if (res.ok) {
         fetchWorkflows();
         fetchAuditLogs();
@@ -473,7 +474,7 @@ export default function Home() {
 
   const handleToggleWorkflow = async (id: string, active: boolean) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/workflows/${id}/toggle?active=${active}`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/v1/workflows/${id}/toggle?active=${active}`, { method: "POST" });
       if (res.ok) {
         fetchWorkflows();
       }
@@ -484,7 +485,7 @@ export default function Home() {
 
   const handleTriggerWorkflow = async (id: string) => {
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/workflows/${id}/run`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/v1/workflows/${id}/run`, { method: "POST" });
       if (res.ok) {
         alert("Workflow executed successfully in background.");
         fetchAuditLogs();
@@ -497,7 +498,7 @@ export default function Home() {
   // Schema Migrations Actions
   const fetchMigrations = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/v1/migrations");
+      const res = await fetch(API_BASE + "/api/v1/migrations");
       if (res.ok) {
         setMigrationsList(await res.json());
       }
@@ -511,7 +512,7 @@ export default function Home() {
     setProposingMigration(true);
     setMigrationProposal(null);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/migrations/propose", {
+      const res = await fetch(API_BASE + "/api/v1/migrations/propose", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({ connection_id: selectedConnId, goal: migrationGoal })
@@ -532,7 +533,7 @@ export default function Home() {
     if (!migrationProposal) return;
     setApplyingMigration(true);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/migrations/execute", {
+      const res = await fetch(API_BASE + "/api/v1/migrations/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({
@@ -563,7 +564,7 @@ export default function Home() {
   const handleRollbackMigration = async (migId: string) => {
     if (!confirm("Are you sure you want to roll back this migration?")) return;
     try {
-      const res = await fetch("http://localhost:8000/api/v1/migrations/rollback", {
+      const res = await fetch(API_BASE + "/api/v1/migrations/rollback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({ connection_id: selectedConnId, migration_id: migId })
@@ -586,7 +587,7 @@ export default function Home() {
   const fetchSnapshots = async () => {
     if (!selectedConnId) return;
     try {
-      const res = await fetch(`http://localhost:8000/api/v1/timemachine/snapshots?connection_id=${selectedConnId}`);
+      const res = await fetch(`${API_BASE}/api/v1/timemachine/snapshots?connection_id=${selectedConnId}`);
       if (res.ok) {
         const data = await res.json();
         setSnapshots(data);
@@ -604,7 +605,7 @@ export default function Home() {
     if (!newSnapshotLabel.trim()) return;
     setCreatingSnapshot(true);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/timemachine/snapshots", {
+      const res = await fetch(API_BASE + "/api/v1/timemachine/snapshots", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({ connection_id: selectedConnId, label: newSnapshotLabel })
@@ -628,7 +629,7 @@ export default function Home() {
     setTimeMachineLoading(true);
     setTimeMachineResult(null);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/timemachine/query", {
+      const res = await fetch(API_BASE + "/api/v1/timemachine/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({ snapshot_id: selectedSnapshotId, query: timeMachineQuery })
@@ -650,7 +651,7 @@ export default function Home() {
     if (!confirm("⚠️ WARNING: This will completely replace the production database with this snapshot. All subsequent changes will be overwritten. Proceed?")) return;
     setRestoringSnapshot(true);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/timemachine/restore", {
+      const res = await fetch(API_BASE + "/api/v1/timemachine/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({ connection_id: selectedConnId, snapshot_id: snapId })
@@ -678,7 +679,7 @@ export default function Home() {
     setEtlError(null);
     setEtlResult(null);
     try {
-      const res = await fetch("http://localhost:8000/api/v1/etl/ingest", {
+      const res = await fetch(API_BASE + "/api/v1/etl/ingest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: json_encoded({
