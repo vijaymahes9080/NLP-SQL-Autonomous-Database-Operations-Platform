@@ -1,0 +1,10 @@
+{
+    "connections": [
+        {
+            "id": "sample_sqlite",
+            "name": "Sample E-Commerce SQLite",
+            "type": "sqlite",
+            "encrypted_config": "3e/3L3q5dwoQ82i7tse/lIoAEI6hDMchLmBgprmbBGF/C9GGxnwRy+grCHGbQkDZSzLSb5XJokpUyXtgCwLuSIVyzG+DiE+B5zE2PbWMd+XnWIsw96ueq0n9aZDe783NZhFEH8lKy8wNcyWKTnSSX3RLjLIbOXd8j5CBy1bPMBg="
+        }
+    ]
+}
